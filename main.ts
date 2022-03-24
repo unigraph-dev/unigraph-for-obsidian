@@ -11,35 +11,69 @@ const DEFAULT_SETTINGS: MyPluginSettings = {
 	mySetting: 'localhost'
 }
 
-function parseNoteToMarkdown (note: any, heading: number = 1, parsed: any[] = []) {
-	const name = note.get('text').as('primitive');
-	parsed.push({
-		text: note.getType() === '$/schema/note_block' 
-			? name 
-			: `\`\`\`unigraph\n${note._value.content._value.uid}\n\`\`\``,
-		heading
-	});
-	(note.get('children')?.['_value['] || [])
-		.sort((a: any, b: any) => a?.['_index']?.['_value.#i'] - b?.['_index']?.['_value.#i'])
-		.map((child: any) => {
-			if (child?._value?.type?.['unigraph.id'] === '$/schema/subentity') {
-				console.log(note, child);
-				const childNote = note.__proto__.constructor(child?._value?._value);
-				parseNoteToMarkdown(childNote, heading + 1, parsed);
-		}
-	})
-}
-
-function parsePostProcess (parsed: any[]) {
+function parsePostProcess (parsed: any[], replaced: any[]) {
 	let maxHeading = 1;
 	parsed.forEach(el => {
 		if (el.heading > maxHeading) maxHeading = el.heading;
 	})
 	return parsed.map(el => {
-		return el.heading < maxHeading && !el.text.startsWith('```unigraph\n') 
-			? `${'#'.repeat(el.heading)} ${el.text}` 
-			: el.text
+		let finText: string = el.text.replace(/\n/g, ' ');
+		let hasMatch = true;
+		while (hasMatch) {
+			hasMatch = false;
+			const matches = replaced.map(el => `[[${el.from}]]`).map((str, idx) => [replaced[idx], finText.indexOf(str) !== -1]);
+			console.log(matches);
+			matches.forEach(([match, hasMatch]) => {
+				if (!hasMatch) return;
+				hasMatch = true;
+				finText = finText.replace(`[[${match.from}]]`, `[[${match.to}|${match.from}]]`);
+			})
+		}
+		return el.heading === 1 ? '' : !el.text.startsWith('```unigraph\n') 
+			? `${'  '.repeat(el.heading - 1)}- ${finText}` 
+			: finText
 	}).join('\n')
+}
+
+function parseNotePage (note: any, parsedLists: any[][]) {
+
+	const parsedList: any[] = [];
+
+	function parseNoteToMarkdown (note: any, heading: number = 1, parsed: any[] = []) {
+		const name = note.get('text').as('primitive');
+		parsed.push({
+			text: note.getType() === '$/schema/note_block' 
+				? name 
+				: `\`\`\`unigraph\n${note._value.content._value.uid}\n\`\`\``,
+			heading
+		});
+		(note.get('children')?.['_value['] || [])
+			.sort((a: any, b: any) => a?.['_index']?.['_value.#i'] - b?.['_index']?.['_value.#i'])
+			.map((child: any) => {
+				if (child?._value?.type?.['unigraph.id'] === '$/schema/subentity') {
+					console.log(note, child);
+					const childNote = note.__proto__.constructor(child?._value?._value);
+					parseNoteToMarkdown(childNote, heading + 1, parsed);
+				} else if (child?._value?.type?.['unigraph.id'] === '$/schema/interface/semantic'
+					&& child?._value?._value?.type?.['unigraph.id'] === '$/schema/note_block'
+					&& child?._value?._value?._hide !== true
+				) {
+					parseNotePage(note.__proto__.constructor(child?._value?._value), parsedLists);
+				}
+		})
+	}
+	
+	parseNoteToMarkdown(note, 1, parsedList);
+	parsedLists.push(parsedList);
+
+}
+
+function parseNotesAsLists (notes: any[]) {
+	
+	const lists: any[][] = [];
+	notes.forEach(el => parseNotePage(el, lists));
+
+	return lists;
 }
 
 export default class MyPlugin extends Plugin {
@@ -65,18 +99,26 @@ export default class MyPlugin extends Plugin {
 				const uids: string[] = parsed.result;
 				// TODO: sync those things now
 				(window as any).unigraph.getObject(uids).then((objs: any[]) => {
-					Promise.all(objs.map(async (note: any) => {
-						const title = note.get('text').as('primitive');
-						const path = title + '.md';
-						const mkd: any[] = [];
-						parseNoteToMarkdown(note, 1, mkd);
-						const text = parsePostProcess(mkd);
+					const escapedTitles: any[] = [];
+					const pages = Object.entries(
+						Object.fromEntries(parseNotesAsLists(objs)
+							.map((pg) => {
+								const newText = pg[0].text.replace(/[:\/\|\.]/g, '_');
+								if (newText !== pg[0].text) escapedTitles.push({from: pg[0].text, to: newText})
+								return [newText + '.md', pg]
+							}))
+					)
+					console.log(pages, escapedTitles);
+					Promise.all(pages.map(async ([path, mkd]: any) => {
+						const text = parsePostProcess(mkd, escapedTitles);
 						try {
 							await this.app.vault.create(path, text)
 						} catch (e: any) {
 							if (e?.message.includes('File already exists')) {
 								const file = this.app.vault.getAbstractFileByPath(path);
-								await this.app.vault.modify(file as TFile, text);
+								await this.app.vault.modify(file as TFile, text).catch((e: any) => {
+									console.log(e, text, path, file)
+								});
 							}
 						}
 						return true;
@@ -166,6 +208,7 @@ class SampleSettingTab extends PluginSettingTab {
 				.setValue(this.plugin.settings.mySetting)
 				.onChange(async (value) => {
 					this.plugin.settings.mySetting = value;
+					window.localStorage.removeItem('userSettings')
 					await this.plugin.saveSettings();
 				}));
 	}

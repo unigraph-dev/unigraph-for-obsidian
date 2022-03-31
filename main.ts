@@ -22,7 +22,7 @@ function parsePostProcess (parsed: any[], replaced: any[]) {
 		while (hasMatch) {
 			hasMatch = false;
 			const matches = replaced.map(el => `[[${el.from}]]`).map((str, idx) => [replaced[idx], finText.indexOf(str) !== -1]);
-			console.log(matches);
+			// console.log(matches);
 			matches.forEach(([match, hasMatch]) => {
 				if (!hasMatch) return;
 				hasMatch = true;
@@ -30,7 +30,7 @@ function parsePostProcess (parsed: any[], replaced: any[]) {
 			})
 		}
 		return el.heading === 1 ? '' : !el.text.startsWith('```unigraph\n') 
-			? `${'  '.repeat(el.heading - 1)}- ${finText}` 
+			? `${'  '.repeat(el.heading - 1)}${el.asOutline ? "- " : ''}${finText}` 
 			: finText
 	}).join('\n')
 }
@@ -39,21 +39,22 @@ function parseNotePage (note: any, parsedLists: any[][]) {
 
 	const parsedList: any[] = [];
 
-	function parseNoteToMarkdown (note: any, heading: number = 1, parsed: any[] = []) {
+	function parseNoteToMarkdown (note: any, heading: number = 1, parsed: any[] = [], asOutline = true) {
 		const name = note.get('text').as('primitive');
 		parsed.push({
 			text: note.getType() === '$/schema/note_block' 
 				? name 
 				: `\`\`\`unigraph\n${note._value.content._value.uid}\n\`\`\``,
-			heading
+			heading,
+			asOutline,
 		});
 		(note.get('children')?.['_value['] || [])
 			.sort((a: any, b: any) => a?.['_index']?.['_value.#i'] - b?.['_index']?.['_value.#i'])
 			.map((child: any) => {
 				if (child?._value?.type?.['unigraph.id'] === '$/schema/subentity') {
-					console.log(note, child);
+					// console.log(note, child);
 					const childNote = note.__proto__.constructor(child?._value?._value);
-					parseNoteToMarkdown(childNote, heading + 1, parsed);
+					parseNoteToMarkdown(childNote, asOutline ? heading + 1 : heading, parsed, note.get('children')?._displayAs !== "paragraph");
 				} else if (child?._value?.type?.['unigraph.id'] === '$/schema/interface/semantic'
 					&& child?._value?._value?.type?.['unigraph.id'] === '$/schema/note_block'
 					&& child?._value?._value?._hide !== true
@@ -103,12 +104,13 @@ export default class MyPlugin extends Plugin {
 					const pages = Object.entries(
 						Object.fromEntries(parseNotesAsLists(objs)
 							.map((pg) => {
+								if (pg[0].text === 'publish.css') return [pg[0].text, pg]
 								const newText = pg[0].text.replace(/[:\/\|\.]/g, '_');
 								if (newText !== pg[0].text) escapedTitles.push({from: pg[0].text, to: newText})
 								return [newText + '.md', pg]
 							}))
 					)
-					console.log(pages, escapedTitles);
+					// console.log(pages, escapedTitles);
 					Promise.all(pages.map(async ([path, mkd]: any) => {
 						const text = parsePostProcess(mkd, escapedTitles);
 						try {
@@ -149,7 +151,7 @@ export default class MyPlugin extends Plugin {
 			}*/
 			const div = el.createDiv();
 			div.id = "unigraph-entity-" + source;
-			console.log(div);
+			// console.log(div);
 			setTimeout(() => {
 				mountComponentWithUid(source, "unigraph-entity-" + source)
 			}, 0)
